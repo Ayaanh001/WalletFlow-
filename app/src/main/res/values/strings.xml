@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WalletFlow</string>
+    <string name="passbook">Passbook</string>
+    <string name="monthly_transactions">Monthly Transactions</string>
+    <string name="edit_transaction">Edit Transaction</string>
+    <string name="scan_sms">Scan SMS</string>
+    <string name="add">Add</string>
+    <string name="save">Save</string>
+    <string name="delete">Delete</string>
+    <string name="income">Income</string>
+    <string name="expense">Expense</string>
+    <string name="category">Category</string>
+    <string name="remark">Remark</string>
+    <string name="amount">Amount</string>
+    <string name="date">Date</string>
+    <string name="bank_details">Bank Details</string>
+    <string name="original_sms">Original SMS</string>
+    <string name="no_transactions">No transactions yet</string>
+    <string name="tap_to_scan">Tap the button below to scan your SMS</string>
+</resources>
