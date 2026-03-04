@@ -13,7 +13,7 @@ interface TransactionDao {
     suspend fun insertAll(transactions: List<Transaction>)
 
     @Update
-    suspend fun update(transaction: Transaction)
+    suspend fun update(transaction: Transaction): Int
 
     @Delete
     suspend fun delete(transaction: Transaction)

@@ -6,11 +6,13 @@ import android.content.Intent
 import android.provider.Telephony
 import android.util.Log
 import com.hussain.walletflow.data.TransactionDatabase
+import com.hussain.walletflow.notification.SmsNotificationHelper
 import com.hussain.walletflow.utils.SmsParser
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class SmsReceiver : BroadcastReceiver() {
 
@@ -22,18 +24,11 @@ class SmsReceiver : BroadcastReceiver() {
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
         if (messages.isNullOrEmpty()) return
 
-        // goAsync() tells the system "don't kill this receiver yet, we're still working".
-        // We must call pendingResult.finish() when done.
-        // Without this, the BroadcastReceiver is considered done the moment onReceive()
-        // returns, and the OS may kill the process before the coroutine completes.
         val pendingResult = goAsync()
 
         GlobalScope.launch(Dispatchers.IO) {
             try {
                 val dao = TransactionDatabase.getDatabase(context).transactionDao()
-
-                // Load existing SMS bodies so we don't double-insert if the inbox
-                // scanner already picked this message up (race condition on first open)
                 val alreadyInDb = HashSet(dao.getAllExistingSmsTexts())
 
                 for (smsMessage in messages) {
@@ -52,10 +47,17 @@ class SmsReceiver : BroadcastReceiver() {
                         Log.d("SmsReceiver", "Banking SMS detected")
                         val transaction = SmsParser.parseTransaction(sender, body, timestamp)
                         if (transaction != null) {
-                            dao.insert(transaction)
-                            // Add to set in case multiple messages arrive in same broadcast
-                            alreadyInDb.add(body)
-                            Log.d("SmsReceiver", "Transaction saved: ${transaction.amount}")
+                            val savedId = dao.insert(transaction)
+                            if (savedId > 0) {
+                                alreadyInDb.add(body)
+                                Log.d("SmsReceiver", "Transaction saved: ${transaction.amount}")
+                                withContext(Dispatchers.Main) {
+                                    SmsNotificationHelper.postTransactionNotification(
+                                        context,
+                                        transaction.copy(id = savedId)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
