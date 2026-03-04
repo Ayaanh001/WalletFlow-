@@ -6,9 +6,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.hussain.walletflow.ui.theme.*
 
-// Using Maps instead of when-expressions means each lookup is O(1) and the
-// compiler doesn't have to build a string-equality chain on every recomposition.
-
 private val CATEGORY_ICONS: Map<String, ImageVector> = mapOf(
     "Food"          to Icons.Filled.Restaurant,
     "Shopping"      to Icons.Filled.ShoppingBag,
@@ -38,6 +35,7 @@ private val CATEGORY_COLORS: Map<String, Color> = mapOf(
     "Entertainment" to CategoryEntertainment,
     "Healthcare"    to CategoryHealth,
     "Education"     to CategoryEducation,
+    "Housing"       to CategoryHousing,
     "Other Expense" to CategoryOthers,
     "Salary"        to CategorySalary,
     "Business"      to CategoryBusiness,
