@@ -426,13 +426,29 @@ private fun ImportTransactionCard(
                                 Spacer(Modifier.height(3.dp))
                                 Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                                 ) {
                                         Text(
                                                 text = dateFormat.format(Date(parsed.date)),
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                        // Category chip — shown when we have the original category
+                                        if (parsed.category.isNotBlank()) {
+                                                Surface(
+                                                        shape = RoundedCornerShape(4.dp),
+                                                        color = amountColor.copy(alpha = 0.12f)
+                                                ) {
+                                                        Text(
+                                                                text = parsed.category,
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = amountColor,
+                                                                fontWeight = FontWeight.Medium,
+                                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                                        )
+                                                }
+                                        }
+                                        // Payment method chip
                                         if (parsed.paymentMethod.isNotBlank()) {
                                                 Surface(
                                                         shape = RoundedCornerShape(4.dp),

@@ -19,20 +19,7 @@ import kotlinx.coroutines.launch
 class TransactionViewModel(application: Application) : AndroidViewModel(application) {
 
     private val dao = TransactionDatabase.getDatabase(application).transactionDao()
-
-    // ── Shared hot StateFlows ────────────────────────────────────────────────
-    // All three are StateFlows with WhileSubscribed(5_000).
-    //
-    // Why this fixes the passbook jitter:
-    //   Cold Flow  → collectAsState(initial=emptyList()) starts with [] on every
-    //                recomposition (every tab switch) → blank frame → list loads → flash.
-    //   StateFlow  → already has the cached value; collectAsState() gets it immediately
-    //                on the first frame → no empty state shown → no jitter.
-    //
-    // WhileSubscribed(5_000) keeps the DB query alive for 5 s after the last
-    // collector drops (nav transition / tab switch), so returning to a screen
-    // gets the cached list instantly without any re-emission.
-    val passbookTransactions: StateFlow<List<Transaction>> =
+        val passbookTransactions: StateFlow<List<Transaction>> =
         dao.getPassbookTransactions()
             .stateIn(
                 scope = viewModelScope,
@@ -224,8 +211,10 @@ class TransactionViewModel(application: Application) : AndroidViewModel(applicat
                             date = targetCal.timeInMillis,
                             amount = parsed.amount,
                             type = parsed.type,
-                            category = if (parsed.type == TransactionType.INCOME) "Other Income"
-                            else "Other Expense",
+                            category = parsed.category.ifBlank {
+                                if (parsed.type == TransactionType.INCOME) "Other Income"
+                                else "Other Expense"
+                            },
                             bankName = "Imported",
                             accountLastFour = "",
                             remark = parsed.narration,

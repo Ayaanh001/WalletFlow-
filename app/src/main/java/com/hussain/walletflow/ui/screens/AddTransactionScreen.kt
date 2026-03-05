@@ -1,5 +1,6 @@
 package com.hussain.walletflow.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -39,6 +40,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import com.hussain.walletflow.R
 import com.hussain.walletflow.data.CurrencyData
+import com.hussain.walletflow.data.CustomItem
+import com.hussain.walletflow.data.CustomItemsRepository
 import com.hussain.walletflow.data.Transaction
 import com.hussain.walletflow.data.TransactionCategories
 import com.hussain.walletflow.data.TransactionType
@@ -49,10 +52,13 @@ import com.hussain.walletflow.utils.getCategoryColor
 import com.hussain.walletflow.utils.getCategoryIcon
 import com.hussain.walletflow.utils.getPaymentChipColor
 import com.hussain.walletflow.utils.getPaymentIcon
+import com.hussain.walletflow.utils.registerCustomCategories
+import com.hussain.walletflow.utils.registerCustomPaymentMethods
 import com.hussain.walletflow.viewmodel.TransactionViewModel
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,9 +70,9 @@ fun AddTransactionScreen(
         val context = LocalContext.current
         val prefsRepository = remember { UserPreferencesRepository(context) }
         val selectedCurrency by
-                prefsRepository.currencyFlow.collectAsState(
-                        initial = UserPreferencesRepository.DEFAULT_CURRENCY
-                )
+        prefsRepository.currencyFlow.collectAsState(
+                initial = UserPreferencesRepository.DEFAULT_CURRENCY
+        )
         val currency =
                 remember(selectedCurrency) {
                         CurrencyData.currencies.find { it.code == selectedCurrency }
@@ -90,12 +96,29 @@ fun AddTransactionScreen(
         val nameFocusRequester = remember { FocusRequester() }
         val keyboardController = LocalSoftwareKeyboardController.current
 
-        val categories =
+        // ── Custom items ──────────────────────────────────────────────────────
+        val customItemsRepo = remember { CustomItemsRepository(context) }
+        val coroutineScope = rememberCoroutineScope()
+        val customCategories by customItemsRepo.customCategoriesFlow.collectAsState(initial = emptyList())
+        val customPaymentMethods by customItemsRepo.customPaymentMethodsFlow.collectAsState(initial = emptyList())
+
+        // Keep IconUtils runtime maps in sync
+        LaunchedEffect(customCategories) { registerCustomCategories(customCategories) }
+        LaunchedEffect(customPaymentMethods) { registerCustomPaymentMethods(customPaymentMethods) }
+
+        var showNewCategoryDialog by remember { mutableStateOf(false) }
+        var showNewPaymentDialog  by remember { mutableStateOf(false) }
+
+        val builtInCategories =
                 if (selectedType == TransactionType.INCOME) {
                         TransactionCategories.INCOME_CATEGORIES
                 } else {
                         TransactionCategories.EXPENSE_CATEGORIES
                 }
+        val typeString = if (selectedType == TransactionType.INCOME) "income" else "expense"
+        val categories = remember(builtInCategories, customCategories, typeString) {
+                builtInCategories + customCategories.filter { it.type == typeString }.map { it.name }
+        }
 
         // Load transaction if in edit mode
         LaunchedEffect(currentTransactionId) {
@@ -107,7 +130,7 @@ fun AddTransactionScreen(
                                         else txn.amount.toString()
                                 name =
                                         if (txn.originalSms.isNotEmpty() &&
-                                                        txn.originalSms != "Manual entry"
+                                                txn.originalSms != "Manual entry"
                                         )
                                                 txn.originalSms
                                                         .replace("\n", " ")
@@ -144,17 +167,17 @@ fun AddTransactionScreen(
                 if (amountValue > 0) {
                         val transaction =
                                 Transaction(
-                                                date = selectedDate.timeInMillis,
-                                                amount = amountValue,
-                                                type = selectedType,
-                                                category = selectedCategory,
-                                                bankName = "",
-                                                accountLastFour = "",
-                                                remark = name,
-                                                originalSms = "",
-                                                paymentMethod = selectedPaymentMethod,
-                                                isAddedToMonthly = true
-                                        )
+                                        date = selectedDate.timeInMillis,
+                                        amount = amountValue,
+                                        type = selectedType,
+                                        category = selectedCategory,
+                                        bankName = "",
+                                        accountLastFour = "",
+                                        remark = name,
+                                        originalSms = "",
+                                        paymentMethod = selectedPaymentMethod,
+                                        isAddedToMonthly = true
+                                )
                                         .copy(id = currentTransactionId ?: 0L)
 
                         if (currentTransactionId != null) {
@@ -180,6 +203,12 @@ fun AddTransactionScreen(
                 selectedDate = Calendar.getInstance()
                 currentTransactionId = null
                 bankAccountInfo = null
+        }
+
+        // Intercept system back when create-new overlays are visible
+        BackHandler(enabled = showNewCategoryDialog || showNewPaymentDialog) {
+                showNewCategoryDialog = false
+                showNewPaymentDialog = false
         }
 
         Scaffold(
@@ -325,8 +354,8 @@ fun AddTransactionScreen(
                                                         containerColor =
                                                                 MaterialTheme.colorScheme
                                                                         .surfaceVariant.copy(
-                                                                        alpha = 0.5f
-                                                                )
+                                                                                alpha = 0.5f
+                                                                        )
                                                 )
                                 ) {
                                         Row(
@@ -334,10 +363,10 @@ fun AddTransactionScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
                                                 listOf(
-                                                                TransactionType.EXPENSE to
-                                                                        "Expense",
-                                                                TransactionType.INCOME to "Income"
-                                                        )
+                                                        TransactionType.EXPENSE to
+                                                                "Expense",
+                                                        TransactionType.INCOME to "Income"
+                                                )
                                                         .forEach { (type, label) ->
                                                                 val isSelected =
                                                                         selectedType == type
@@ -360,15 +389,15 @@ fun AddTransactionScreen(
                                                                                         )
                                                                                         .clickable {
                                                                                                 if (selectedType !=
-                                                                                                                type
+                                                                                                        type
                                                                                                 ) {
                                                                                                         selectedType =
                                                                                                                 type
                                                                                                         // Reset category when type changes
                                                                                                         val newCategories =
                                                                                                                 if (type ==
-                                                                                                                                TransactionType
-                                                                                                                                        .INCOME
+                                                                                                                        TransactionType
+                                                                                                                                .INCOME
                                                                                                                 )
                                                                                                                         TransactionCategories
                                                                                                                                 .INCOME_CATEGORIES
@@ -466,11 +495,11 @@ fun AddTransactionScreen(
                                                                 value = amount,
                                                                 onValueChange = { newValue ->
                                                                         if (newValue.isEmpty() ||
-                                                                                        newValue.matches(
-                                                                                                Regex(
-                                                                                                        "^\\d*\\.?\\d*$"
-                                                                                                )
+                                                                                newValue.matches(
+                                                                                        Regex(
+                                                                                                "^\\d*\\.?\\d*$"
                                                                                         )
+                                                                                )
                                                                         ) {
                                                                                 amount = newValue
                                                                         }
@@ -534,8 +563,8 @@ fun AddTransactionScreen(
                                                         containerColor =
                                                                 MaterialTheme.colorScheme
                                                                         .surfaceVariant.copy(
-                                                                        alpha = 0.5f
-                                                                )
+                                                                                alpha = 0.5f
+                                                                        )
                                                 )
                                 ) {
                                         Row(
@@ -619,8 +648,8 @@ fun AddTransactionScreen(
                                                         containerColor =
                                                                 MaterialTheme.colorScheme
                                                                         .surfaceVariant.copy(
-                                                                        alpha = 0.4f
-                                                                )
+                                                                                alpha = 0.4f
+                                                                        )
                                                 )
                                 ) {
                                         Column(modifier = Modifier.fillMaxWidth()) {
@@ -764,7 +793,7 @@ fun AddTransactionScreen(
                                                                                         )
                                                                 ) {
                                                                         categories.forEach {
-                                                                                category ->
+                                                                                        category ->
                                                                                 val isSelected =
                                                                                         selectedCategory ==
                                                                                                 category
@@ -788,10 +817,10 @@ fun AddTransactionScreen(
                                                                                 Box(
                                                                                         modifier =
                                                                                                 Modifier.clip(
-                                                                                                                RoundedCornerShape(
-                                                                                                                        10.dp
-                                                                                                                )
+                                                                                                        RoundedCornerShape(
+                                                                                                                10.dp
                                                                                                         )
+                                                                                                )
                                                                                                         .then(
                                                                                                                 if (isSelected
                                                                                                                 )
@@ -811,7 +840,7 @@ fun AddTransactionScreen(
                                                                                                         .clickable {
                                                                                                                 selectedCategory =
                                                                                                                         if (selectedCategory ==
-                                                                                                                                        category
+                                                                                                                                category
                                                                                                                         )
                                                                                                                                 ""
                                                                                                                         else
@@ -876,6 +905,33 @@ fun AddTransactionScreen(
                                                                                         }
                                                                                 }
                                                                         }
+                                                                        // ── "+ New" chip (inside FlowRow, flows with other chips) ──
+                                                                        Box(
+                                                                                modifier = Modifier
+                                                                                        .clip(RoundedCornerShape(10.dp))
+                                                                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                                                                                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                                                                                        .clickable { showNewCategoryDialog = true }
+                                                                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                                                        ) {
+                                                                                Row(
+                                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                                                ) {
+                                                                                        Icon(
+                                                                                                Icons.Filled.Add,
+                                                                                                contentDescription = "New category",
+                                                                                                modifier = Modifier.size(14.dp),
+                                                                                                tint = MaterialTheme.colorScheme.primary
+                                                                                        )
+                                                                                        Text(
+                                                                                                text = "New",
+                                                                                                style = MaterialTheme.typography.labelMedium,
+                                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                                color = MaterialTheme.colorScheme.primary
+                                                                                        )
+                                                                                }
+                                                                        }
                                                                 }
                                                         }
                                                 }
@@ -893,8 +949,8 @@ fun AddTransactionScreen(
                                                         containerColor =
                                                                 MaterialTheme.colorScheme
                                                                         .surfaceVariant.copy(
-                                                                        alpha = 0.4f
-                                                                )
+                                                                                alpha = 0.4f
+                                                                        )
                                                 )
                                 ) {
                                         Column(modifier = Modifier.fillMaxWidth()) {
@@ -1088,23 +1144,18 @@ fun AddTransactionScreen(
                                                                 ) {
                                                                         val allPaymentMethods =
                                                                                 remember(
-                                                                                        bankAccountInfo
+                                                                                        bankAccountInfo,
+                                                                                        customPaymentMethods
                                                                                 ) {
-                                                                                        if (bankAccountInfo !=
-                                                                                                        null
-                                                                                        ) {
-                                                                                                listOf(
-                                                                                                        bankAccountInfo!!
-                                                                                                ) +
-                                                                                                        TransactionCategories
-                                                                                                                .PAYMENT_METHODS
+                                                                                        val base = if (bankAccountInfo != null) {
+                                                                                                listOf(bankAccountInfo!!) + TransactionCategories.PAYMENT_METHODS
                                                                                         } else {
-                                                                                                TransactionCategories
-                                                                                                        .PAYMENT_METHODS
+                                                                                                TransactionCategories.PAYMENT_METHODS
                                                                                         }
+                                                                                        base + customPaymentMethods.map { it.name }
                                                                                 }
                                                                         allPaymentMethods.forEach {
-                                                                                method ->
+                                                                                        method ->
                                                                                 val isSelected =
                                                                                         selectedPaymentMethod ==
                                                                                                 method
@@ -1130,10 +1181,10 @@ fun AddTransactionScreen(
                                                                                 Box(
                                                                                         modifier =
                                                                                                 Modifier.clip(
-                                                                                                                RoundedCornerShape(
-                                                                                                                        10.dp
-                                                                                                                )
+                                                                                                        RoundedCornerShape(
+                                                                                                                10.dp
                                                                                                         )
+                                                                                                )
                                                                                                         .then(
                                                                                                                 if (isSelected
                                                                                                                 )
@@ -1267,6 +1318,33 @@ fun AddTransactionScreen(
                                                                                         }
                                                                                 }
                                                                         }
+                                                                        // ── "+ New" chip (inside FlowRow, flows with other chips) ──
+                                                                        Box(
+                                                                                modifier = Modifier
+                                                                                        .clip(RoundedCornerShape(10.dp))
+                                                                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                                                                                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                                                                                        .clickable { showNewPaymentDialog = true }
+                                                                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                                                        ) {
+                                                                                Row(
+                                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                                                ) {
+                                                                                        Icon(
+                                                                                                Icons.Filled.Add,
+                                                                                                contentDescription = "New payment method",
+                                                                                                modifier = Modifier.size(14.dp),
+                                                                                                tint = MaterialTheme.colorScheme.primary
+                                                                                        )
+                                                                                        Text(
+                                                                                                text = "New",
+                                                                                                style = MaterialTheme.typography.labelMedium,
+                                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                                color = MaterialTheme.colorScheme.primary
+                                                                                        )
+                                                                                }
+                                                                        }
                                                                 }
                                                         }
                                                 }
@@ -1287,8 +1365,8 @@ fun AddTransactionScreen(
                                                         containerColor =
                                                                 MaterialTheme.colorScheme
                                                                         .surfaceVariant.copy(
-                                                                        alpha = 0.4f
-                                                                )
+                                                                                alpha = 0.4f
+                                                                        )
                                                 )
                                 ) {
                                         Row(
@@ -1339,9 +1417,9 @@ fun AddTransactionScreen(
                                                                                                         .get(
                                                                                                                 Calendar.DAY_OF_YEAR
                                                                                                         ) ==
-                                                                                                        today.get(
-                                                                                                                Calendar.DAY_OF_YEAR
-                                                                                                        )
+                                                                                                today.get(
+                                                                                                        Calendar.DAY_OF_YEAR
+                                                                                                )
                                                                                 if (isToday)
                                                                                         "Today, ${timeFormat.format(selectedDate.time)}"
                                                                                 else
@@ -1388,6 +1466,50 @@ fun AddTransactionScreen(
                                                 )
                         )
                 }
+        }
+
+        // ── Full-screen "Create" page overlays ───────────────────────────────
+        // These slide in over the top of AddTransactionScreen like a sub-page,
+        // so they don't need their own nav route.
+        if (showNewCategoryDialog) {
+                CreateCustomItemScreen(
+                        isCategory = true,
+                        initialTypeIndex = if (selectedType == TransactionType.INCOME) 1 else 0,
+                        existingNames = TransactionCategories.EXPENSE_CATEGORIES +
+                                TransactionCategories.INCOME_CATEGORIES +
+                                customCategories.map { it.name },
+                        onConfirm = { itemName, iconKey, colorHex, itemType ->
+                                // Register immediately so the chip shows the right icon/color
+                                // before DataStore emits the updated list
+                                val newItem = CustomItem(itemName, iconKey, colorHex, itemType)
+                                registerCustomCategories(customCategories + newItem)
+                                selectedCategory = itemName
+                                coroutineScope.launch {
+                                        customItemsRepo.addCustomCategory(newItem)
+                                }
+                                showNewCategoryDialog = false
+                        },
+                        onBack = { showNewCategoryDialog = false }
+                )
+        }
+
+        if (showNewPaymentDialog) {
+                CreateCustomItemScreen(
+                        isCategory = false,
+                        existingNames = TransactionCategories.PAYMENT_METHODS +
+                                customPaymentMethods.map { it.name },
+                        onConfirm = { itemName, iconKey, colorHex, itemType ->
+                                // Register immediately so the chip shows the right icon/color
+                                val newItem = CustomItem(itemName, iconKey, colorHex, itemType)
+                                registerCustomPaymentMethods(customPaymentMethods + newItem)
+                                selectedPaymentMethod = itemName
+                                coroutineScope.launch {
+                                        customItemsRepo.addCustomPaymentMethod(newItem)
+                                }
+                                showNewPaymentDialog = false
+                        },
+                        onBack = { showNewPaymentDialog = false }
+                )
         }
 
         // Date picker dialog

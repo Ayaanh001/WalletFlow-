@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hussain.walletflow.R
+import com.hussain.walletflow.data.CustomItemsRepository
 import com.hussain.walletflow.data.Transaction
 import com.hussain.walletflow.data.TransactionCategories
 import com.hussain.walletflow.data.TransactionDatabase
@@ -39,6 +40,8 @@ import com.hussain.walletflow.utils.getCategoryColor
 import com.hussain.walletflow.utils.getCategoryIcon
 import com.hussain.walletflow.utils.getPaymentChipColor
 import com.hussain.walletflow.utils.getPaymentIcon
+import com.hussain.walletflow.utils.registerCustomCategories
+import com.hussain.walletflow.utils.registerCustomPaymentMethods
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -84,6 +87,13 @@ private fun QuickAddSheet(
 ) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
+
+    val customItemsRepo = remember { CustomItemsRepository(context) }
+    val customCategories by customItemsRepo.customCategoriesFlow.collectAsState(initial = emptyList())
+    val customPaymentMethods by customItemsRepo.customPaymentMethodsFlow.collectAsState(initial = emptyList())
+
+    LaunchedEffect(customCategories) { registerCustomCategories(customCategories) }
+    LaunchedEffect(customPaymentMethods) { registerCustomPaymentMethods(customPaymentMethods) }
 
     var transaction       by remember { mutableStateOf<Transaction?>(null) }
     var remark            by remember { mutableStateOf("") }
@@ -144,10 +154,13 @@ private fun QuickAddSheet(
                     contentAlignment = Alignment.Center
                 ) { CircularProgressIndicator() }
             } else {
+                val typeString = if (tx.type == TransactionType.INCOME) "income" else "expense"
                 val categories = if (tx.type == TransactionType.INCOME)
-                    TransactionCategories.INCOME_CATEGORIES
+                    TransactionCategories.INCOME_CATEGORIES + customCategories.filter { it.type == "income" }.map { it.name }
                 else
-                    TransactionCategories.EXPENSE_CATEGORIES
+                    TransactionCategories.EXPENSE_CATEGORIES + customCategories.filter { it.type == "expense" }.map { it.name }
+
+                val paymentMethods = TransactionCategories.PAYMENT_METHODS + customPaymentMethods.map { it.name }
 
                 Column(
                     modifier = Modifier
@@ -475,7 +488,7 @@ private fun QuickAddSheet(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalArrangement   = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    TransactionCategories.PAYMENT_METHODS.forEach { method ->
+                                    paymentMethods.forEach { method ->
                                         val isSelected = payment == method
                                         val chipColor  = getPaymentChipColor(method)
                                         Box(
@@ -544,7 +557,8 @@ private fun QuickAddSheet(
                                         remark           = remark,
                                         category         = category,
                                         paymentMethod    = payment,
-                                        isAddedToMonthly = true
+                                        isAddedToMonthly = true,
+                                        originalSms      = ""
                                     )
                                     val exists = dao.getTransactionById(updated.id) != null
                                     if (exists) dao.update(updated) else dao.insert(updated)

@@ -1,5 +1,8 @@
 package com.hussain.walletflow.ui.screens
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
@@ -34,6 +37,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hussain.walletflow.R
 import com.hussain.walletflow.data.CurrencyData
+import com.hussain.walletflow.data.CustomItem
+import com.hussain.walletflow.data.CustomItemsRepository
 import com.hussain.walletflow.data.Transaction
 import com.hussain.walletflow.data.TransactionCategories
 import com.hussain.walletflow.data.TransactionType
@@ -45,10 +50,13 @@ import com.hussain.walletflow.utils.getCategoryColor
 import com.hussain.walletflow.utils.getCategoryIcon
 import com.hussain.walletflow.utils.getPaymentChipColor
 import com.hussain.walletflow.utils.getPaymentIcon
+import com.hussain.walletflow.utils.registerCustomCategories
+import com.hussain.walletflow.utils.registerCustomPaymentMethods
 import com.hussain.walletflow.viewmodel.TransactionViewModel
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlinx.coroutines.launch
 
 // Locale-aware Indian number formatter — created once, not on every call
 private val indianNumberFormat: NumberFormat by lazy {
@@ -59,6 +67,42 @@ private val indianNumberFormat: NumberFormat by lazy {
 }
 
 private fun formatIndianAmount(amount: Double): String = indianNumberFormat.format(amount)
+
+/**
+ * Renders 4 randomised M3-style shapes (circle, rounded-square, diamond, pill)
+ * as a privacy mask instead of dots. [size] controls the height of each shape.
+ */
+@Composable
+private fun HiddenAmountShapes(size: Dp, color: Color) {
+        val shapes = remember { listOf(0, 1, 2, 3) } // circle, square, diamond, pill
+        Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(size * 0.35f)
+        ) {
+                shapes.forEachIndexed { idx, _ ->
+                        Canvas(modifier = Modifier.size(size)) {
+                                val r = size.toPx() / 2f
+                                when (idx % 4) {
+                                        0 -> drawCircle(color = color, radius = r)                      // circle
+                                        1 -> drawRoundRect(                                              // pill
+                                                color = color,
+                                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(r * 0.8f)
+                                        )
+                                        2 -> {                                                           // diamond
+                                                val path = androidx.compose.ui.graphics.Path().apply {
+                                                        moveTo(r, 0f); lineTo(r * 2, r); lineTo(r, r * 2); lineTo(0f, r); close()
+                                                }
+                                                drawPath(path, color = color)
+                                        }
+                                        else -> drawRoundRect(                                           // rounded square
+                                                color = color,
+                                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(r * 0.4f)
+                                        )
+                                }
+                        }
+                }
+        }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +126,14 @@ fun HomeScreen(
                 CurrencyData.currencies.find { it.code == selectedCurrency }
                         ?: CurrencyData.currencies.first()
         }
+        val hideBalance by prefsRepository.hideBalanceFlow.collectAsState(initial = false)
+        val hideIncome  by prefsRepository.hideIncomeFlow.collectAsState(initial = false)
+        // Tap-to-reveal: track whether the value is temporarily shown
+        var balanceRevealed by remember { mutableStateOf(false) }
+        var incomeRevealed  by remember { mutableStateOf(false) }
+        val scope2 = rememberCoroutineScope()
+        LaunchedEffect(hideBalance) { if (!hideBalance) balanceRevealed = false }
+        LaunchedEffect(hideIncome)  { if (!hideIncome)  incomeRevealed  = false }
 
         // ── Selection state ──────────────────────────────────────────────────────
         var isSelectionMode by remember { mutableStateOf(false) }
@@ -184,360 +236,513 @@ fun HomeScreen(
         val allSelected by remember {
                 derivedStateOf {
                         val allIds = groupedTransactions.flatMap { it.third }.map { it.id }
-                        allIds.isNotEmpty() && selectedIds.size == allIds.size
+                        allIds.isNotEmpty() && selectedIds.containsAll(allIds)
                 }
         }
 
         // ── Bulk-edit sheet state ────────────────────────────────────────────────
         var showBulkEditSheet by remember { mutableStateOf(false) }
 
+        var bulkEditReopenStep by remember { mutableIntStateOf(0) }
+
+        // ── Custom items ─────────────────────────────────────────────────────────
+        val customItemsRepo = remember { CustomItemsRepository(context) }
+        val customCategories by customItemsRepo.customCategoriesFlow.collectAsState(initial = emptyList())
+        val customPaymentMethods by customItemsRepo.customPaymentMethodsFlow.collectAsState(initial = emptyList())
+        LaunchedEffect(customCategories) { registerCustomCategories(customCategories) }
+        LaunchedEffect(customPaymentMethods) { registerCustomPaymentMethods(customPaymentMethods) }
+
+        // ── Create-new overlays (state lifted here so they render ABOVE ModalBottomSheet popup) ──
+        var showNewCategoryFromSheet by remember { mutableStateOf(false) }
+        var showNewPaymentFromSheet  by remember { mutableStateOf(false) }
+        val homeCoroutineScope = rememberCoroutineScope()
+
+        // Close create-new overlays on system back
+        BackHandler(enabled = showNewCategoryFromSheet || showNewPaymentFromSheet) {
+                showNewCategoryFromSheet = false
+                showNewPaymentFromSheet  = false
+        }
+        val allBulkCategories = remember(customCategories) {
+                TransactionCategories.EXPENSE_CATEGORIES +
+                        TransactionCategories.INCOME_CATEGORIES +
+                        customCategories.map { it.name }
+        }
+        val allBulkPaymentMethods = remember(customPaymentMethods) {
+                TransactionCategories.PAYMENT_METHODS + customPaymentMethods.map { it.name }
+        }
+
         // ── UI ───────────────────────────────────────────────────────────────────
-        Column(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize()) {
 
-                // Sticky header
-                Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = if (listState.firstVisibleItemIndex > 0) 4.dp else 0.dp
-                ) {
-                        Crossfade(targetState = isSelectionMode, label = "topBarFade") { selection ->
-                                if (selection) {
-                                        HomeSelectionHeader(
-                                                selectedCount = selectedIds.size,
-                                                allSelected = allSelected,
-                                                onToggleSelectAll = {
-                                                        if (allSelected) {
-                                                                selectedIds.clear()
-                                                        } else {
-                                                                selectedIds.addAll(groupedTransactions.flatMap { it.third }.map { it.id })
-                                                        }
-                                                },
-                                                onDeleteSelected = {
-                                                        viewModel.deleteTransactionsByIds(selectedIds.toList())
-                                                        selectedIds.clear()
-                                                        isSelectionMode = false
-                                                },
-                                                onMoreSelected = { showBulkEditSheet = true }
-                                        )
-                                } else {
-                                        Row(
-                                                modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                                Text(
-                                                        text = if (userName.isNotEmpty()) "Hi, $userName" else "Hi",
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        maxLines = 1,
-                                                        style = MaterialTheme.typography.titleLarge,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.onSurface
-                                                )
-                                                Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                ) {
-                                                        // Month chip
-                                                        Row(
-                                                                modifier = Modifier
-                                                                        .clip(CircleShape)
-                                                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                                                                        .clickable { if (!isSelectionMode) showMonthPicker = true }
-                                                                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                                                                verticalAlignment = Alignment.CenterVertically,
-                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                        ) {
-                                                                Icon(
-                                                                        painter = painterResource(R.drawable.calendar_month),
-                                                                        contentDescription = null,
-                                                                        modifier = Modifier.size(18.dp),
-                                                                        tint = MaterialTheme.colorScheme.onSurface
-                                                                )
-                                                                Text(
-                                                                        text = displayMonth,
-                                                                        style = MaterialTheme.typography.labelLarge,
-                                                                        fontWeight = FontWeight.Medium,
-                                                                        color = MaterialTheme.colorScheme.onSurface
-                                                                )
-                                                        }
-                                                        FilledIconButton(
-                                                                colors = IconButtonDefaults.filledIconButtonColors(
-                                                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                                                        contentColor = MaterialTheme.colorScheme.onSurface
-                                                                ),
-                                                                onClick = onSettingsClick
-                                                        ) {
-                                                                Icon(
-                                                                        painter = painterResource(R.drawable.settings),
-                                                                        contentDescription = "Settings"
-                                                                )
-                                                        }
-                                                }
-                                        }
-                                }
-                        }
-                }
-
-                Box(modifier = Modifier.weight(1f)) {
-                        LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                state = listState,
-                                contentPadding = PaddingValues(bottom = 80.dp)
+                        // Sticky header
+                        Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.surface,
+                                shadowElevation = if (listState.firstVisibleItemIndex > 0) 4.dp else 0.dp
                         ) {
-                                // Balance card
-                                item(key = "balance_card") {
-                                        Column(
-                                                modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(horizontal = 16.dp)
-                                        ) {
-                                                Card(
-                                                        modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .padding(bottom = 16.dp),
-                                                        colors = CardDefaults.cardColors(
-                                                                containerColor = BalanceBlue.copy(alpha = 0.1f)
-                                                        ),
-                                                        shape = RoundedCornerShape(20.dp)
-                                                ) {
-                                                        Column(
-                                                                modifier = Modifier
-                                                                        .fillMaxWidth()
-                                                                        .padding(24.dp),
-                                                                horizontalAlignment = Alignment.Start
-                                                        ) {
-                                                                Text(
-                                                                        text = "Available Balance",
-                                                                        style = MaterialTheme.typography.titleSmall,
-                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                                )
-                                                                Spacer(modifier = Modifier.height(8.dp))
-                                                                Text(
-                                                                        text = "${currency.symbol} ${formatIndianAmount(balance)}",
-                                                                        style = MaterialTheme.typography.displayMedium,
-                                                                        fontWeight = FontWeight.Bold,
-                                                                        color = MaterialTheme.colorScheme.onSurface
-                                                                )
-                                                        }
-                                                }
+                                Crossfade(targetState = isSelectionMode, label = "topBarFade") { selection ->
 
+                                        val allSelected by remember {
+                                                derivedStateOf {
+                                                        val allIds = groupedTransactions.flatMap { it.third }.map { it.id }
+                                                        allIds.isNotEmpty() && selectedIds.containsAll(allIds)  // ← containsAll not size check
+                                                }
+                                        }
+
+                                        if (isSelectionMode) {
+                                                HomeSelectionHeader(
+                                                        selectedCount = selectedIds.size,
+                                                        allSelected = allSelected,
+                                                        onToggleSelectAll = {
+                                                                if (allSelected) {
+                                                                        selectedIds.clear()
+                                                                } else {
+                                                                        selectedIds.addAll(groupedTransactions.flatMap { it.third }.map { it.id })
+                                                                }
+                                                        },
+                                                        onDeleteSelected = {
+                                                                viewModel.deleteTransactionsByIds(selectedIds.toList())
+                                                                selectedIds.clear()
+                                                                isSelectionMode = false
+                                                        },
+                                                        onMoreSelected = { showBulkEditSheet = true }
+                                                )
+                                        } else {
                                                 Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                                ) {
-                                                        // Income card
-                                                        Card(
-                                                                modifier = Modifier.weight(1f),
-                                                                colors = CardDefaults.cardColors(
-                                                                        containerColor = IncomeGreen.copy(alpha = 0.1f)
-                                                                ),
-                                                                shape = RoundedCornerShape(20.dp)
-                                                        ) {
-                                                                Column(
-                                                                        modifier = Modifier
-                                                                                .fillMaxWidth()
-                                                                                .padding(16.dp)
-                                                                ) {
-                                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                                Icon(
-                                                                                        Icons.Default.ArrowDownward,
-                                                                                        contentDescription = null,
-                                                                                        modifier = Modifier.size(16.dp),
-                                                                                        tint = IncomeGreen
-                                                                                )
-                                                                                Spacer(modifier = Modifier.width(4.dp))
-                                                                                Text(
-                                                                                        "Income",
-                                                                                        style = MaterialTheme.typography.labelMedium,
-                                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                                                )
-                                                                        }
-                                                                        Spacer(modifier = Modifier.height(4.dp))
-                                                                        Text(
-                                                                                text = "${currency.symbol} ${formatIndianAmount(totalIncome)}",
-                                                                                style = MaterialTheme.typography.titleMedium,
-                                                                                fontWeight = FontWeight.Bold,
-                                                                                color = IncomeGreen
-                                                                        )
-                                                                }
-                                                        }
-
-                                                        // Expense card
-                                                        Card(
-                                                                modifier = Modifier.weight(1f),
-                                                                colors = CardDefaults.cardColors(
-                                                                        containerColor = ExpenseRed.copy(alpha = 0.1f)
-                                                                ),
-                                                                shape = RoundedCornerShape(20.dp)
-                                                        ) {
-                                                                Column(
-                                                                        modifier = Modifier
-                                                                                .fillMaxWidth()
-                                                                                .padding(16.dp)
-                                                                ) {
-                                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                                                Icon(
-                                                                                        Icons.Default.ArrowUpward,
-                                                                                        contentDescription = null,
-                                                                                        modifier = Modifier.size(16.dp),
-                                                                                        tint = ExpenseRed
-                                                                                )
-                                                                                Spacer(modifier = Modifier.width(4.dp))
-                                                                                Text(
-                                                                                        "Expenses",
-                                                                                        style = MaterialTheme.typography.labelMedium,
-                                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                                                )
-                                                                        }
-                                                                        Spacer(modifier = Modifier.height(4.dp))
-                                                                        Text(
-                                                                                text = "${currency.symbol} ${formatIndianAmount(totalExpense)}",
-                                                                                style = MaterialTheme.typography.titleMedium,
-                                                                                fontWeight = FontWeight.Bold,
-                                                                                color = ExpenseRed
-                                                                        )
-                                                                }
-                                                        }
-                                                }
-                                                Spacer(modifier = Modifier.height(24.dp))
-                                        }
-                                }
-
-                                if (groupedTransactions.isEmpty()) {
-                                        item(key = "empty_state") {
-                                                Box(
                                                         modifier = Modifier
                                                                 .fillMaxWidth()
-                                                                .padding(top = 80.dp),
-                                                        contentAlignment = Alignment.Center
+                                                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.SpaceBetween
                                                 ) {
-                                                        Column(
-                                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                                                        ) {
-                                                                Icon(
-                                                                        Icons.Filled.ReceiptLong,
-                                                                        contentDescription = null,
-                                                                        modifier = Modifier.size(64.dp),
-                                                                        tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                                                                )
-                                                                Text(
-                                                                        text = "No transactions added yet",
-                                                                        style = MaterialTheme.typography.bodyLarge,
-                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                                )
-                                                        }
-                                                }
-                                        }
-                                } else {
-                                        groupedTransactions.forEach { (dayInfo, dayTotal, transactions) ->
-                                                val (dayLabel, dayOfWeek) = dayInfo
-
-                                                item(key = "header_$dayLabel") {
+                                                        Text(
+                                                                text = if (userName.isNotEmpty()) "Hi, $userName" else "Hi",
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                maxLines = 1,
+                                                                style = MaterialTheme.typography.titleLarge,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = MaterialTheme.colorScheme.onSurface
+                                                        )
                                                         Row(
-                                                                modifier = Modifier
-                                                                        .fillMaxWidth()
-                                                                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                                verticalAlignment = Alignment.CenterVertically
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                                                         ) {
+                                                                // Month chip
                                                                 Row(
+                                                                        modifier = Modifier
+                                                                                .clip(CircleShape)
+                                                                                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                                                                .clickable { if (!isSelectionMode) showMonthPicker = true }
+                                                                                .padding(horizontal = 14.dp, vertical = 8.dp),
                                                                         verticalAlignment = Alignment.CenterVertically,
                                                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                                 ) {
-                                                                        Text(
-                                                                                text = dayLabel,
-                                                                                style = MaterialTheme.typography.titleMedium,
-                                                                                fontWeight = FontWeight.Bold
+                                                                        Icon(
+                                                                                painter = painterResource(R.drawable.calendar_month),
+                                                                                contentDescription = null,
+                                                                                modifier = Modifier.size(18.dp),
+                                                                                tint = MaterialTheme.colorScheme.onSurface
                                                                         )
                                                                         Text(
-                                                                                text = dayOfWeek,
-                                                                                style = MaterialTheme.typography.titleMedium,
-                                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                                text = displayMonth,
+                                                                                style = MaterialTheme.typography.labelLarge,
+                                                                                fontWeight = FontWeight.Medium,
+                                                                                color = MaterialTheme.colorScheme.onSurface
                                                                         )
                                                                 }
-                                                                Text(
-                                                                        text = "${if (dayTotal <= 0) "- " else ""}${currency.symbol} ${formatIndianAmount(kotlin.math.abs(dayTotal))}",
-                                                                        style = MaterialTheme.typography.titleMedium,
-                                                                        fontWeight = FontWeight.SemiBold,
-                                                                        color = if (dayTotal >= 0) IncomeGreen
-                                                                        else MaterialTheme.colorScheme.onSurfaceVariant
-                                                                )
+                                                                FilledIconButton(
+                                                                        colors = IconButtonDefaults.filledIconButtonColors(
+                                                                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                                                contentColor = MaterialTheme.colorScheme.onSurface
+                                                                        ),
+                                                                        onClick = onSettingsClick
+                                                                ) {
+                                                                        Icon(
+                                                                                painter = painterResource(R.drawable.settings),
+                                                                                contentDescription = "Settings"
+                                                                        )
+                                                                }
                                                         }
-                                                }
-
-                                                items(transactions, key = { it.id }) { transaction ->
-                                                        val runningBalance = runningBalances[transaction.id] ?: 0.0
-                                                        // Read isSelected from the SnapshotStateSet — fine-grained recompose
-                                                        val isSelected = selectedIds.contains(transaction.id)
-                                                        HomeTransactionItem(
-                                                                transaction = transaction,
-                                                                currencySymbol = currency.symbol,
-                                                                runningBalance = runningBalance,
-                                                                isSelectionMode = isSelectionMode,
-                                                                isSelected = isSelected,
-                                                                onClick = {
-                                                                        if (isSelectionMode) {
-                                                                                if (isSelected) selectedIds.remove(transaction.id)
-                                                                                else selectedIds.add(transaction.id)
-                                                                        } else {
-                                                                                onEditTransaction(transaction.id)
-                                                                        }
-                                                                },
-                                                                onLongClick = {
-                                                                        if (!isSelectionMode) {
-                                                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                                                isSelectionMode = true
-                                                                                selectedIds.add(transaction.id)
-                                                                        }
-                                                                }
-                                                        )
-                                                }
-
-                                                item(key = "spacer_$dayLabel") {
-                                                        Spacer(modifier = Modifier.height(8.dp))
                                                 }
                                         }
                                 }
                         }
-                }
 
-                if (showMonthPicker) {
-                        MonthPickerDialog(
-                                selectedYear = selectedYear,
-                                selectedMonth = selectedMonthIndex,
-                                currentYear = currentYear,
-                                currentMonth = now.get(Calendar.MONTH),
-                                onMonthSelected = { year, month ->
-                                        selectedYear = year
-                                        selectedMonthIndex = month
-                                        showMonthPicker = false
-                                },
-                                onDismiss = { showMonthPicker = false }
-                        )
-                }
+                        Box(modifier = Modifier.weight(1f)) {
+                                LazyColumn(
+                                        modifier = Modifier.fillMaxSize(),
+                                        state = listState,
+                                        contentPadding = PaddingValues(bottom = 80.dp)
+                                ) {
+                                        // Balance card
+                                        item(key = "balance_card") {
+                                                Column(
+                                                        modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(horizontal = 16.dp)
+                                                ) {
+                                                        Card(
+                                                                modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .padding(bottom = 16.dp)
+                                                                        .clip(RoundedCornerShape(20.dp))
+                                                                        .then(
+                                                                                if (hideBalance)
+                                                                                        Modifier.clickable {
+                                                                                                balanceRevealed = true
+                                                                                                scope2.launch {
+                                                                                                        kotlinx.coroutines.delay(5000)
+                                                                                                        balanceRevealed = false
+                                                                                                }
+                                                                                        }
+                                                                                else Modifier
+                                                                        ),
+                                                                colors = CardDefaults.cardColors(
+                                                                        containerColor = BalanceBlue.copy(alpha = 0.1f)
+                                                                ),
+                                                                shape = RoundedCornerShape(20.dp)
+                                                        ) {
+                                                                Column(
+                                                                        modifier = Modifier
+                                                                                .fillMaxWidth()
+                                                                                .padding(24.dp),
+                                                                        horizontalAlignment = Alignment.Start
+                                                                ) {
+                                                                        Text(
+                                                                                text = "Available Balance",
+                                                                                style = MaterialTheme.typography.titleSmall,
+                                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                        )
+                                                                        Spacer(modifier = Modifier.height(8.dp))
+                                                                        if (hideBalance && !balanceRevealed) {
+                                                                                Row(
+                                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                                                ) {
+                                                                                        Text(
+                                                                                                text = currency.symbol,
+                                                                                                style = MaterialTheme.typography.displayMedium,
+                                                                                                fontWeight = FontWeight.Bold,
+                                                                                                color = MaterialTheme.colorScheme.onSurface
+                                                                                        )
+                                                                                        HiddenAmountShapes(
+                                                                                                size = 24.dp,
+                                                                                                color = MaterialTheme.colorScheme.onSurface
+                                                                                        )
+                                                                                }
+                                                                        } else {
+                                                                                Text(
+                                                                                        text = "${currency.symbol} ${formatIndianAmount(balance)}",
+                                                                                        style = MaterialTheme.typography.displayMedium,
+                                                                                        fontWeight = FontWeight.Bold,
+                                                                                        color = MaterialTheme.colorScheme.onSurface
+                                                                                )
+                                                                        }
+                                                                }
+                                                        }
 
-                if (showBulkEditSheet) {
-                        BulkEditSheet(
-                                selectedCount = selectedIds.size,
-                                onDismiss = { showBulkEditSheet = false },
-                                onChangeCategory = { category ->
-                                        viewModel.updateCategoryByIds(selectedIds.toList(), category)
-                                        showBulkEditSheet = false
-                                        selectedIds.clear()
-                                        isSelectionMode = false
+                                                        Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                        ) {
+                                                                // Income card
+                                                                Card(
+                                                                        modifier = Modifier.weight(1f)
+                                                                                .clip(RoundedCornerShape(20.dp)).then(
+                                                                                if (hideIncome)
+                                                                                        Modifier.clickable {
+                                                                                                incomeRevealed = true
+                                                                                                scope2.launch {
+                                                                                                        kotlinx.coroutines.delay(5000)
+                                                                                                        incomeRevealed = false
+                                                                                                }
+                                                                                        }
+                                                                                else Modifier
+                                                                        ),
+                                                                        colors = CardDefaults.cardColors(
+                                                                                containerColor = IncomeGreen.copy(alpha = 0.1f)
+                                                                        ),
+                                                                        shape = RoundedCornerShape(20.dp)
+                                                                ) {
+                                                                        Column(
+                                                                                modifier = Modifier
+                                                                                        .fillMaxWidth()
+                                                                                        .padding(16.dp)
+                                                                        ) {
+                                                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                                                        Icon(
+                                                                                                Icons.Default.ArrowDownward,
+                                                                                                contentDescription = null,
+                                                                                                modifier = Modifier.size(16.dp),
+                                                                                                tint = IncomeGreen
+                                                                                        )
+                                                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                                                        Text(
+                                                                                                "Income",
+                                                                                                style = MaterialTheme.typography.labelMedium,
+                                                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                                        )
+                                                                                }
+                                                                                Spacer(modifier = Modifier.height(4.dp))
+                                                                                if (hideIncome && !incomeRevealed) {
+                                                                                        Row(
+                                                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                                                        ) {
+                                                                                                Text(
+                                                                                                        text = currency.symbol,
+                                                                                                        style = MaterialTheme.typography.titleMedium,
+                                                                                                        fontWeight = FontWeight.Bold,
+                                                                                                        color = IncomeGreen
+                                                                                                )
+                                                                                                HiddenAmountShapes(
+                                                                                                        size = 12.dp,
+                                                                                                        color = IncomeGreen.copy(alpha = 0.5f)
+                                                                                                )
+                                                                                        }
+                                                                                } else {
+                                                                                        Text(
+                                                                                                text = "${currency.symbol} ${formatIndianAmount(totalIncome)}",
+                                                                                                style = MaterialTheme.typography.titleMedium,
+                                                                                                fontWeight = FontWeight.Bold,
+                                                                                                color = IncomeGreen
+                                                                                        )
+                                                                                }
+                                                                        }
+                                                                }
+
+                                                                // Expense card
+                                                                Card(
+                                                                        modifier = Modifier.weight(1f),
+                                                                        colors = CardDefaults.cardColors(
+                                                                                containerColor = ExpenseRed.copy(alpha = 0.1f)
+                                                                        ),
+                                                                        shape = RoundedCornerShape(20.dp)
+                                                                ) {
+                                                                        Column(
+                                                                                modifier = Modifier
+                                                                                        .fillMaxWidth()
+                                                                                        .padding(16.dp)
+                                                                        ) {
+                                                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                                                        Icon(
+                                                                                                Icons.Default.ArrowUpward,
+                                                                                                contentDescription = null,
+                                                                                                modifier = Modifier.size(16.dp),
+                                                                                                tint = ExpenseRed
+                                                                                        )
+                                                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                                                        Text(
+                                                                                                "Expenses",
+                                                                                                style = MaterialTheme.typography.labelMedium,
+                                                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                                        )
+                                                                                }
+                                                                                Spacer(modifier = Modifier.height(4.dp))
+                                                                                Text(
+                                                                                        text = "${currency.symbol} ${formatIndianAmount(totalExpense)}",
+                                                                                        style = MaterialTheme.typography.titleMedium,
+                                                                                        fontWeight = FontWeight.Bold,
+                                                                                        color = ExpenseRed
+                                                                                )
+                                                                        }
+                                                                }
+                                                        }
+                                                        Spacer(modifier = Modifier.height(24.dp))
+                                                }
+                                        }
+
+                                        if (groupedTransactions.isEmpty()) {
+                                                item(key = "empty_state") {
+                                                        Box(
+                                                                modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .padding(top = 80.dp),
+                                                                contentAlignment = Alignment.Center
+                                                        ) {
+                                                                Column(
+                                                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                                                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                                                                ) {
+                                                                        Icon(
+                                                                                Icons.Filled.ReceiptLong,
+                                                                                contentDescription = null,
+                                                                                modifier = Modifier.size(64.dp),
+                                                                                tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                                                                        )
+                                                                        Text(
+                                                                                text = "No transactions added yet",
+                                                                                style = MaterialTheme.typography.bodyLarge,
+                                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                        )
+                                                                }
+                                                        }
+                                                }
+                                        } else {
+                                                groupedTransactions.forEach { (dayInfo, dayTotal, transactions) ->
+                                                        val (dayLabel, dayOfWeek) = dayInfo
+
+                                                        item(key = "header_$dayLabel") {
+                                                                Row(
+                                                                        modifier = Modifier
+                                                                                .fillMaxWidth()
+                                                                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                                        verticalAlignment = Alignment.CenterVertically
+                                                                ) {
+                                                                        Row(
+                                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                                        ) {
+                                                                                Text(
+                                                                                        text = dayLabel,
+                                                                                        style = MaterialTheme.typography.titleMedium,
+                                                                                        fontWeight = FontWeight.Bold
+                                                                                )
+                                                                                Text(
+                                                                                        text = dayOfWeek,
+                                                                                        style = MaterialTheme.typography.titleMedium,
+                                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                                )
+                                                                        }
+                                                                        Text(
+                                                                                text = "${if (dayTotal <= 0) "- " else ""}${currency.symbol} ${formatIndianAmount(kotlin.math.abs(dayTotal))}",
+                                                                                style = MaterialTheme.typography.titleMedium,
+                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                color = if (dayTotal >= 0) IncomeGreen
+                                                                                else MaterialTheme.colorScheme.onSurfaceVariant
+                                                                        )
+                                                                }
+                                                        }
+
+                                                        items(transactions, key = { it.id }) { transaction ->
+                                                                val runningBalance = runningBalances[transaction.id] ?: 0.0
+                                                                // Read isSelected from the SnapshotStateSet — fine-grained recompose
+                                                                val isSelected = selectedIds.contains(transaction.id)
+                                                                HomeTransactionItem(
+                                                                        transaction = transaction,
+                                                                        currencySymbol = currency.symbol,
+                                                                        runningBalance = runningBalance,
+                                                                        isSelectionMode = isSelectionMode,
+                                                                        isSelected = isSelected,
+                                                                        onClick = {
+                                                                                if (isSelectionMode) {
+                                                                                        if (isSelected) selectedIds.remove(transaction.id)
+                                                                                        else selectedIds.add(transaction.id)
+                                                                                } else {
+                                                                                        onEditTransaction(transaction.id)
+                                                                                }
+                                                                        },
+                                                                        onLongClick = {
+                                                                                if (!isSelectionMode) {
+                                                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                                                        isSelectionMode = true
+                                                                                        selectedIds.add(transaction.id)
+                                                                                }
+                                                                        }
+                                                                )
+                                                        }
+
+                                                        item(key = "spacer_$dayLabel") {
+                                                                Spacer(modifier = Modifier.height(8.dp))
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+
+                        if (showMonthPicker) {
+                                MonthPickerDialog(
+                                        selectedYear = selectedYear,
+                                        selectedMonth = selectedMonthIndex,
+                                        currentYear = currentYear,
+                                        currentMonth = now.get(Calendar.MONTH),
+                                        onMonthSelected = { year, month ->
+                                                selectedYear = year
+                                                selectedMonthIndex = month
+                                                showMonthPicker = false
+                                        },
+                                        onDismiss = { showMonthPicker = false }
+                                )
+                        }
+
+
+                        if (showBulkEditSheet) {
+                                BulkEditSheet(
+                                        selectedCount = selectedIds.size,
+                                        initialStep = bulkEditReopenStep,          // ← pass saved step
+                                        onDismiss = { showBulkEditSheet = false },
+                                        customCategories = customCategories,
+                                        customPaymentMethods = customPaymentMethods,
+                                        onChangeCategory = { category ->
+                                                viewModel.updateCategoryByIds(selectedIds.toList(), category)
+                                                showBulkEditSheet = false
+                                                bulkEditReopenStep = 0                 // ← reset for next open
+                                                selectedIds.clear()
+                                                isSelectionMode = false
+                                        },
+                                        onChangePaymentMethod = { method ->
+                                                viewModel.updatePaymentMethodByIds(selectedIds.toList(), method)
+                                                showBulkEditSheet = false
+                                                bulkEditReopenStep = 0                 // ← reset for next open
+                                                selectedIds.clear()
+                                                isSelectionMode = false
+                                        },
+                                        onRequestNewCategory = {
+                                                bulkEditReopenStep = 1                 // ← remember we were on step 1
+                                                showBulkEditSheet = false
+                                                showNewCategoryFromSheet = true
+                                        },
+                                        onRequestNewPayment = {
+                                                bulkEditReopenStep = 2                 // ← remember we were on step 2
+                                                showBulkEditSheet = false
+                                                showNewPaymentFromSheet = true
+                                        }
+                                )
+                        }
+                } // end Column
+
+                // ── Create-new overlays — rendered outside Column so they appear above ModalBottomSheet ──
+                if (showNewCategoryFromSheet) {
+                        CreateCustomItemScreen(
+                                isCategory = true,
+                                existingNames = allBulkCategories,
+                                onConfirm = { name, iconKey, colorHex, itemType ->
+                                        val newItem = CustomItem(name, iconKey, colorHex, itemType)
+                                        registerCustomCategories(customCategories + newItem)
+                                        homeCoroutineScope.launch {
+                                                customItemsRepo.addCustomCategory(newItem)
+                                        }
+                                        showNewCategoryFromSheet = false
+                                        showBulkEditSheet = true           // ← reopen sheet so user can pick the new category
                                 },
-                                onChangePaymentMethod = { method ->
-                                        viewModel.updatePaymentMethodByIds(selectedIds.toList(), method)
-                                        showBulkEditSheet = false
-                                        selectedIds.clear()
-                                        isSelectionMode = false
+                                onBack = {
+                                        showNewCategoryFromSheet = false
+                                        showBulkEditSheet = true           // ← reopen sheet on back press
                                 }
                         )
                 }
-        }
+                if (showNewPaymentFromSheet) {
+                        CreateCustomItemScreen(
+                                isCategory = false,
+                                existingNames = allBulkPaymentMethods,
+                                onConfirm = { name, iconKey, colorHex, itemType ->
+                                        val newItem = CustomItem(name, iconKey, colorHex, itemType)
+                                        registerCustomPaymentMethods(customPaymentMethods + newItem)
+                                        homeCoroutineScope.launch {
+                                                customItemsRepo.addCustomPaymentMethod(newItem)
+                                        }
+                                        showNewPaymentFromSheet = false
+                                        showBulkEditSheet = true           // ← reopen sheet so user can pick the new method
+                                },
+                                onBack = {
+                                        showNewPaymentFromSheet = false
+                                        showBulkEditSheet = true           // ← reopen sheet on back press
+                                }
+                        )
+                }
+        } // end Box
 }
 
 @Composable
@@ -570,7 +775,8 @@ private fun HomeSelectionHeader(
                                         Icon(
                                                 imageVector = if (allSelected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
                                                 contentDescription = "Select all",
-                                                tint = iconTint
+                                                tint = iconTint,
+                                                modifier = Modifier.size(24.dp)
                                         )
                                 }
                                 Text("All", style = MaterialTheme.typography.labelSmall, color = iconTint)
@@ -619,12 +825,28 @@ private fun HomeSelectionHeader(
 @Composable
 private fun BulkEditSheet(
         selectedCount: Int,
+        initialStep: Int = 0,                  // ← new param
         onDismiss: () -> Unit,
+        customCategories: List<CustomItem>,
+        customPaymentMethods: List<CustomItem>,
         onChangeCategory: (String) -> Unit,
-        onChangePaymentMethod: (String) -> Unit
+        onChangePaymentMethod: (String) -> Unit,
+        onRequestNewCategory: () -> Unit,
+        onRequestNewPayment: () -> Unit
 ) {
-        // 0 = menu, 1 = category picker, 2 = payment picker
-        var step by remember { mutableIntStateOf(0) }
+        var step by remember { mutableIntStateOf(initialStep) }
+
+        val allExpenseCategories = remember(customCategories) {
+                TransactionCategories.EXPENSE_CATEGORIES +
+                        customCategories.filter { it.type == "expense" }.map { it.name }
+        }
+        val allIncomeCategories = remember(customCategories) {
+                TransactionCategories.INCOME_CATEGORIES +
+                        customCategories.filter { it.type == "income" }.map { it.name }
+        }
+        val allPaymentMethods = remember(customPaymentMethods) {
+                TransactionCategories.PAYMENT_METHODS + customPaymentMethods.map { it.name }
+        }
 
         ModalBottomSheet(
                 onDismissRequest = onDismiss,
@@ -637,17 +859,38 @@ private fun BulkEditSheet(
                                 .padding(horizontal = 20.dp)
                                 .padding(bottom = 32.dp)
                 ) {
-                        // Handle bar label
-                        Text(
-                                text = "Edit $selectedCount transaction${if (selectedCount > 1) "s" else ""}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(bottom = 20.dp)
-                        )
+                        // Title row with optional back button
+                        Row(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                        ) {
+                                if (step != 0) {
+                                        IconButton(
+                                                onClick = { step = 0 },
+                                                modifier = Modifier.size(32.dp)
+                                        ) {
+                                                Icon(
+                                                        Icons.Default.ArrowBack,
+                                                        contentDescription = "Back",
+                                                        modifier = Modifier.size(20.dp),
+                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                }
+                                Text(
+                                        text = when (step) {
+                                                1    -> "Select Category"
+                                                2    -> "Select Payment Method"
+                                                else -> "Edit $selectedCount transaction${if (selectedCount > 1) "s" else ""}"
+                                        },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                )
+                        }
 
                         when (step) {
                                 0 -> {
-                                        // Menu options
                                         BulkEditMenuOption(
                                                 icon = Icons.Default.Category,
                                                 label = "Change Category",
@@ -660,115 +903,213 @@ private fun BulkEditSheet(
                                                 onClick = { step = 2 }
                                         )
                                 }
+
                                 1 -> {
-                                        // Category picker
-                                        Text(
-                                                text = "Select Category",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.padding(bottom = 16.dp)
-                                        )
-                                        val allCategories = TransactionCategories.EXPENSE_CATEGORIES + TransactionCategories.INCOME_CATEGORIES
-                                        @OptIn(ExperimentalLayoutApi::class)
-                                        FlowRow(
+                                        Column(
                                                 modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                verticalArrangement = Arrangement.spacedBy(12.dp)
                                         ) {
-                                                allCategories.forEach { category ->
-                                                        val chipColor = getCategoryColor(category)
-                                                        Row(
-                                                                modifier = Modifier
-                                                                        .clip(RoundedCornerShape(13.dp))
-                                                                        .background(chipColor.copy(alpha = 0.12f))
-                                                                        .border(1.dp, chipColor.copy(alpha = 0.3f), RoundedCornerShape(13.dp))
-                                                                        .clickable { onChangeCategory(category) }
-                                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                                                verticalAlignment = Alignment.CenterVertically,
-                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                        ) {
-                                                                Icon(
-                                                                        getCategoryIcon(category),
-                                                                        contentDescription = null,
-                                                                        modifier = Modifier.size(16.dp),
-                                                                        tint = chipColor
-                                                                )
-                                                                Text(
-                                                                        text = category,
-                                                                        style = MaterialTheme.typography.labelMedium,
-                                                                        fontWeight = FontWeight.SemiBold,
-                                                                        color = chipColor
-                                                                )
-                                                        }
+
+                                                // ── Expense label ─────────────────────────────────────────────────
+                                                Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                        HorizontalDivider(modifier = Modifier.weight(1f))
+                                                        Text(
+                                                                text = "Expense",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                        HorizontalDivider(modifier = Modifier.weight(1f))
                                                 }
-                                        }
-                                }
-                                2 -> {
-                                        // Payment method picker
-                                        Text(
-                                                text = "Select Payment Method",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.padding(bottom = 16.dp)
-                                        )
-                                        @OptIn(ExperimentalLayoutApi::class)
-                                        FlowRow(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                                TransactionCategories.PAYMENT_METHODS.forEach { method ->
-                                                        val chipColor = getPaymentChipColor(method)
-                                                        Row(
-                                                                modifier = Modifier
-                                                                        .clip(RoundedCornerShape(13.dp))
-                                                                        .background(chipColor.copy(alpha = 0.12f))
-                                                                        .border(1.dp, chipColor.copy(alpha = 0.3f), RoundedCornerShape(13.dp))
-                                                                        .clickable { onChangePaymentMethod(method) }
-                                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                                                verticalAlignment = Alignment.CenterVertically,
-                                                                horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                                        ) {
-                                                                when (method) {
-                                                                        "GPay" -> androidx.compose.foundation.Image(
-                                                                                painter = painterResource(R.drawable.gpay),
-                                                                                contentDescription = "GPay",
-                                                                                modifier = Modifier.size(14.dp)
-                                                                        )
-                                                                        "PhonePe" -> androidx.compose.foundation.Image(
-                                                                                painter = painterResource(R.drawable.phonepe),
-                                                                                contentDescription = "PhonePe",
-                                                                                modifier = Modifier.size(14.dp)
-                                                                        )
-                                                                        else -> Icon(
-                                                                                getPaymentIcon(method),
+
+                                                @OptIn(ExperimentalLayoutApi::class)
+                                                FlowRow(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                        allExpenseCategories.forEach { category ->
+                                                                val chipColor = getCategoryColor(category)
+                                                                Row(
+                                                                        modifier = Modifier
+                                                                                .clip(RoundedCornerShape(13.dp))
+                                                                                .background(chipColor.copy(alpha = 0.12f))
+                                                                                .border(1.dp, chipColor.copy(alpha = 0.3f), RoundedCornerShape(13.dp))
+                                                                                .clickable { onChangeCategory(category) }
+                                                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                                ) {
+                                                                        Icon(
+                                                                                getCategoryIcon(category),
                                                                                 contentDescription = null,
-                                                                                modifier = Modifier.size(14.dp),
+                                                                                modifier = Modifier.size(16.dp),
                                                                                 tint = chipColor
                                                                         )
+                                                                        Text(
+                                                                                text = category,
+                                                                                style = MaterialTheme.typography.labelMedium,
+                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                color = chipColor
+                                                                        )
                                                                 }
-                                                                Text(
-                                                                        text = method,
-                                                                        style = MaterialTheme.typography.labelMedium,
-                                                                        fontWeight = FontWeight.SemiBold,
-                                                                        color = chipColor
-                                                                )
                                                         }
                                                 }
+
+                                                // ── Income label ──────────────────────────────────────────────────
+                                                Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                        HorizontalDivider(modifier = Modifier.weight(1f))
+                                                        Text(
+                                                                text = "Income",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                        HorizontalDivider(modifier = Modifier.weight(1f))
+                                                }
+
+                                                @OptIn(ExperimentalLayoutApi::class)
+                                                FlowRow(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                        allIncomeCategories.forEach { category ->
+                                                                val chipColor = getCategoryColor(category)
+                                                                Row(
+                                                                        modifier = Modifier
+                                                                                .clip(RoundedCornerShape(13.dp))
+                                                                                .background(chipColor.copy(alpha = 0.12f))
+                                                                                .border(1.dp, chipColor.copy(alpha = 0.3f), RoundedCornerShape(13.dp))
+                                                                                .clickable { onChangeCategory(category) }
+                                                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                                        verticalAlignment = Alignment.CenterVertically,
+                                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                                ) {
+                                                                        Icon(
+                                                                                getCategoryIcon(category),
+                                                                                contentDescription = null,
+                                                                                modifier = Modifier.size(16.dp),
+                                                                                tint = chipColor
+                                                                        )
+                                                                        Text(
+                                                                                text = category,
+                                                                                style = MaterialTheme.typography.labelMedium,
+                                                                                fontWeight = FontWeight.SemiBold,
+                                                                                color = chipColor
+                                                                        )
+                                                                }
+                                                        }
+                                                }
+
+                                                // ── "+ New" chip (standalone at the bottom) ───────────────────────
+                                                Row(
+                                                        modifier = Modifier
+                                                                .clip(RoundedCornerShape(13.dp))
+                                                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                                                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(13.dp))
+                                                                .clickable { onRequestNewCategory() }
+                                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                        Icon(
+                                                                Icons.Default.Add,
+                                                                contentDescription = "New category",
+                                                                modifier = Modifier.size(14.dp),
+                                                                tint = MaterialTheme.colorScheme.primary
+                                                        )
+                                                        Text(
+                                                                text = "New",
+                                                                style = MaterialTheme.typography.labelMedium,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = MaterialTheme.colorScheme.primary
+                                                        )
+                                                }
+                                        }
+                                }                                2 -> {
+                                @OptIn(ExperimentalLayoutApi::class)
+                                FlowRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                        allPaymentMethods.forEach { method ->
+                                                val chipColor = getPaymentChipColor(method)
+                                                Row(
+                                                        modifier = Modifier
+                                                                .clip(RoundedCornerShape(13.dp))
+                                                                .background(chipColor.copy(alpha = 0.12f))
+                                                                .border(1.dp, chipColor.copy(alpha = 0.3f), RoundedCornerShape(13.dp))
+                                                                .clickable { onChangePaymentMethod(method) }
+                                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                ) {
+                                                        when (method) {
+                                                                "GPay" -> androidx.compose.foundation.Image(
+                                                                        painter = painterResource(R.drawable.gpay),
+                                                                        contentDescription = "GPay",
+                                                                        modifier = Modifier.size(14.dp)
+                                                                )
+                                                                "PhonePe" -> androidx.compose.foundation.Image(
+                                                                        painter = painterResource(R.drawable.phonepe),
+                                                                        contentDescription = "PhonePe",
+                                                                        modifier = Modifier.size(14.dp)
+                                                                )
+                                                                else -> Icon(
+                                                                        getPaymentIcon(method),
+                                                                        contentDescription = null,
+                                                                        modifier = Modifier.size(14.dp),
+                                                                        tint = chipColor
+                                                                )
+                                                        }
+                                                        Text(
+                                                                text = method,
+                                                                style = MaterialTheme.typography.labelMedium,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = chipColor
+                                                        )
+                                                }
+                                        }
+                                        // "+ New" chip
+                                        Row(
+                                                modifier = Modifier
+                                                        .clip(RoundedCornerShape(13.dp))
+                                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                                                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(13.dp))
+                                                        .clickable { onRequestNewPayment() }
+                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                                Icon(
+                                                        Icons.Default.Add,
+                                                        contentDescription = "New payment method",
+                                                        modifier = Modifier.size(14.dp),
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                )
+                                                Text(
+                                                        text = "New",
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                )
                                         }
                                 }
                         }
-
-                        if (step != 0) {
-                                Spacer(modifier = Modifier.height(20.dp))
-                                TextButton(onClick = { step = 0 }) {
-                                        Icon(Icons.Default.ArrowBack, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Back")
-                                }
                         }
                 }
         }
+
 }
 
 @Composable

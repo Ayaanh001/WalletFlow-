@@ -17,17 +17,18 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook
 
 /** Wraps the result of parsing a file. */
 data class ParseResult(
-        val transactions: List<ParsedTransaction>,
-        val passwordRequired: Boolean = false
+    val transactions: List<ParsedTransaction>,
+    val passwordRequired: Boolean = false
 )
 
 data class ParsedTransaction(
-        val date: Long,
-        val amount: Double,
-        val type: TransactionType,
-        val narration: String,
-        val paymentMethod: String,
-        val rawLine: String = ""
+    val date: Long,
+    val amount: Double,
+    val type: TransactionType,
+    val narration: String,
+    val paymentMethod: String,
+    val category: String = "",       // preserved from WalletFlow backup CSV
+    val rawLine: String = ""
 )
 
 object FileImportParser {
@@ -59,7 +60,7 @@ object FileImportParser {
                 ParseResult(parseCsvOrTxt(inputStream))
             }
         }
-                ?: ParseResult(emptyList())
+            ?: ParseResult(emptyList())
     }
 
     fun parseUriWithPassword(context: Context, uri: Uri, password: String): ParseResult {
@@ -70,7 +71,7 @@ object FileImportParser {
         return context.contentResolver.openInputStream(uri)?.use { inputStream ->
             parseExcel(inputStream, isXlsx, password)
         }
-                ?: ParseResult(emptyList())
+            ?: ParseResult(emptyList())
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -79,26 +80,26 @@ object FileImportParser {
 
     private fun parseCsvOrTxt(inputStream: java.io.InputStream): List<ParsedTransaction> {
         val lines =
-                BufferedReader(InputStreamReader(inputStream))
-                        .readLines()
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
+            BufferedReader(InputStreamReader(inputStream))
+                .readLines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
 
         if (lines.size < 2) return emptyList()
 
         // ── 1. Find the header row ───────────────────────────────────────────
         // Skip lines that look like bank statement metadata (no recognizable headers)
         val headerIndex =
-                lines.indexOfFirst { line ->
-                    val lower = line.lowercase()
-                    lower.contains("date") ||
-                            lower.contains("narration") ||
-                            lower.contains("description") ||
-                            lower.contains("withdrawal") ||
-                            lower.contains("debit") ||
-                            lower.contains("deposit") ||
-                            lower.contains("credit")
-                }
+            lines.indexOfFirst { line ->
+                val lower = line.lowercase()
+                lower.contains("date") ||
+                        lower.contains("narration") ||
+                        lower.contains("description") ||
+                        lower.contains("withdrawal") ||
+                        lower.contains("debit") ||
+                        lower.contains("deposit") ||
+                        lower.contains("credit")
+            }
         if (headerIndex < 0) return emptyList()
 
         val headerLine = lines[headerIndex]
@@ -107,40 +108,54 @@ object FileImportParser {
 
         // ── 2. Map column indices ────────────────────────────────────────────
         val dateCol =
-                headers.indexOfFirst { h ->
-                    h.contains("date") || h.contains("txn date") || h.contains("value date")
-                }
+            headers.indexOfFirst { h ->
+                h.contains("date") || h.contains("txn date") || h.contains("value date")
+            }
         val narrationCol =
-                headers.indexOfFirst { h ->
-                    h.contains("narration") ||
-                            h.contains("description") ||
-                            h.contains("particulars") ||
-                            h.contains("remarks") ||
-                            h.contains("details") ||
-                            h.contains("Narration")
-                }
+            headers.indexOfFirst { h ->
+                h.contains("narration") ||
+                        h.contains("description") ||
+                        h.contains("particulars") ||
+                        h.contains("remarks") ||
+                        h.contains("remark") ||
+                        h.contains("details") ||
+                        h.contains("Narration")
+            }
+
+        // ── WalletFlow backup-specific columns ───────────────────────────────
+        // Our own export has: ID, Date, Type, Amount, Category, Payment Method,
+        // Remark, Bank, Account Last 4, Instrument, Added to Monthly
+        val typeCol     = headers.indexOfFirst { h -> h == "type" }
+        val categoryCol = headers.indexOfFirst { h -> h == "category" }
+        val paymentCol  = headers.indexOfFirst { h -> h == "payment method" }
+        val remarkCol   = headers.indexOfFirst { h -> h == "remark" }
+
+        // Is this a WalletFlow backup? Yes if we can see a "type" column with
+        // values like "Income" / "Expense", which distinguishes it from a generic
+        // bank CSV that only has debit/credit columns.
+        val isWalletFlowBackup = typeCol >= 0 && categoryCol >= 0
+
         val withdrawalCol =
-                headers.indexOfFirst { h ->
-                    h.contains("withdrawal") ||
-                            h.contains("Withdrawal Amt") ||
-                            h.contains("debit") ||
-                            h == "dr" ||
-                            h.contains("amount") && h.contains("debit")
-                }
+            if (isWalletFlowBackup) -1          // WalletFlow uses a single Amount + Type column
+            else headers.indexOfFirst { h ->
+                h.contains("withdrawal") ||
+                        h.contains("Withdrawal Amt") ||
+                        h.contains("debit") ||
+                        h == "dr" ||
+                        h.contains("amount") && h.contains("debit")
+            }
         val depositCol =
-                headers.indexOfFirst { h ->
-                    h.contains("deposit") ||
-                            h.contains("deposit") ||
-                            h.contains("Deposit Amt") ||
-                            h.contains("credit") ||
-                            h == "cr" ||
-                            h.contains("amount") && h.contains("credit")
-                }
-        // Single "amount" column fallback (positive = income, negative = expense)
+            if (isWalletFlowBackup) -1
+            else headers.indexOfFirst { h ->
+                h.contains("deposit") ||
+                        h.contains("Deposit Amt") ||
+                        h.contains("credit") ||
+                        h == "cr" ||
+                        h.contains("amount") && h.contains("credit")
+            }
+        // Single "amount" column — used both for WalletFlow backup and generic single-column CSVs
         val singleAmountCol =
-                if (withdrawalCol < 0 && depositCol < 0)
-                        headers.indexOfFirst { h -> h == "amount" || h == "amt" }
-                else -1
+            headers.indexOfFirst { h -> h == "amount" || h == "amt" }
 
         // ── 3. Parse data rows ───────────────────────────────────────────────
         val results = mutableListOf<ParsedTransaction>()
@@ -154,51 +169,82 @@ object FileImportParser {
             val rawDate = if (dateCol >= 0 && dateCol < cells.size) cells[dateCol] else continue
             val parsedDate = parseDate(rawDate) ?: continue
 
-            val narration =
-                    if (narrationCol >= 0 && narrationCol < cells.size) cells[narrationCol] else ""
+            // Prefer "Remark" column from WalletFlow backup; fall back to Narration / Description
+            val narration = when {
+                remarkCol >= 0 && remarkCol < cells.size && cells[remarkCol].isNotBlank() ->
+                    cells[remarkCol]
+                narrationCol >= 0 && narrationCol < cells.size -> cells[narrationCol]
+                else -> ""
+            }
 
             val (amount, type) =
-                    when {
-                        singleAmountCol >= 0 && singleAmountCol < cells.size -> {
-                            val amt = parseAmount(cells[singleAmountCol])
-                            if (amt != null) {
-                                if (amt >= 0) Pair(amt, TransactionType.INCOME)
-                                else Pair(-amt, TransactionType.EXPENSE)
-                            } else continue
+                when {
+                    // ── WalletFlow backup: single Amount column + explicit Type column ──
+                    isWalletFlowBackup && singleAmountCol >= 0 && singleAmountCol < cells.size -> {
+                        val amt = parseAmount(cells[singleAmountCol]) ?: continue
+                        val typeStr = if (typeCol >= 0 && typeCol < cells.size)
+                            cells[typeCol].trim().lowercase() else ""
+                        val txType = when {
+                            typeStr == "income"  -> TransactionType.INCOME
+                            typeStr == "expense" -> TransactionType.EXPENSE
+                            // fallback: positive = income, negative = expense
+                            amt >= 0             -> TransactionType.INCOME
+                            else                 -> TransactionType.EXPENSE
                         }
-                        else -> {
-                            val withdrawal =
-                                    if (withdrawalCol >= 0 && withdrawalCol < cells.size)
-                                            parseAmount(cells[withdrawalCol])
-                                    else null
-                            val deposit =
-                                    if (depositCol >= 0 && depositCol < cells.size)
-                                            parseAmount(cells[depositCol])
-                                    else null
+                        Pair(if (amt < 0) -amt else amt, txType)
+                    }
+                    // ── Generic single-amount column (no separate debit/credit cols) ──
+                    singleAmountCol >= 0 && withdrawalCol < 0 && depositCol < 0
+                            && singleAmountCol < cells.size -> {
+                        val amt = parseAmount(cells[singleAmountCol])
+                        if (amt != null) {
+                            if (amt >= 0) Pair(amt, TransactionType.INCOME)
+                            else Pair(-amt, TransactionType.EXPENSE)
+                        } else continue
+                    }
+                    else -> {
+                        val withdrawal =
+                            if (withdrawalCol >= 0 && withdrawalCol < cells.size)
+                                parseAmount(cells[withdrawalCol])
+                            else null
+                        val deposit =
+                            if (depositCol >= 0 && depositCol < cells.size)
+                                parseAmount(cells[depositCol])
+                            else null
 
-                            when {
-                                withdrawal != null && withdrawal > 0 ->
-                                        Pair(withdrawal, TransactionType.EXPENSE)
-                                deposit != null && deposit > 0 ->
-                                        Pair(deposit, TransactionType.INCOME)
-                                else -> continue // skip rows with no amount
-                            }
+                        when {
+                            withdrawal != null && withdrawal > 0 ->
+                                Pair(withdrawal, TransactionType.EXPENSE)
+                            deposit != null && deposit > 0 ->
+                                Pair(deposit, TransactionType.INCOME)
+                            else -> continue // skip rows with no amount
                         }
                     }
+                }
 
             if (amount <= 0) continue
 
-            val paymentMethod = detectPaymentMethod(narration)
+            // Prefer explicit Payment Method column; fall back to detection from narration
+            val paymentMethod = when {
+                paymentCol >= 0 && paymentCol < cells.size && cells[paymentCol].isNotBlank() ->
+                    cells[paymentCol]
+                else -> detectPaymentMethod(narration)
+            }
+
+            // Preserve original category from WalletFlow backup if present
+            val category = if (categoryCol >= 0 && categoryCol < cells.size)
+                cells[categoryCol] else ""
 
             results.add(
-                    ParsedTransaction(
-                            date = parsedDate,
-                            amount = amount,
-                            type = type,
-                            narration = narration.ifBlank { "Imported" },
-                            paymentMethod = paymentMethod,
-                            rawLine = line
-                    )
+                ParsedTransaction(
+                    date = parsedDate,
+                    amount = amount,
+                    type = type,
+                    narration = narration.ifBlank { "Imported" },
+                    paymentMethod = paymentMethod,
+                    category = category,
+                    rawLine = line
+                )
             )
         }
 
@@ -458,23 +504,23 @@ object FileImportParser {
     }
 
     private val DATE_FORMATS =
-            listOf(
-                    "dd/MM/yyyy",
-                    "dd-MM-yyyy",
-                    "MM/dd/yyyy",
-                    "yyyy-MM-dd",
-                    "dd MMM yyyy",
-                    "dd-MMM-yyyy",
-                    "dd MMM yy",
-                    "dd-MMM-yy",
-                    "d/M/yy",
-                    "d/M/yyyy",
-                    "yyyyMMdd",
-                    "MM-dd-yyyy",
-                    "dd.MM.yyyy",
-                    "d-MMM-yyyy",
-                    "d-MMM-yy"
-            )
+        listOf(
+            "dd/MM/yyyy",
+            "dd-MM-yyyy",
+            "MM/dd/yyyy",
+            "yyyy-MM-dd",
+            "dd MMM yyyy",
+            "dd-MMM-yyyy",
+            "dd MMM yy",
+            "dd-MMM-yy",
+            "d/M/yy",
+            "d/M/yyyy",
+            "yyyyMMdd",
+            "MM-dd-yyyy",
+            "dd.MM.yyyy",
+            "d-MMM-yyyy",
+            "d-MMM-yy"
+        )
 
     private fun parseDate(raw: String): Long? {
         val cleaned = raw.trim().removeSurrounding("\"")
@@ -491,12 +537,12 @@ object FileImportParser {
 
     private fun parseAmount(raw: String): Double? {
         val cleaned =
-                raw.trim()
-                        .removeSurrounding("\"")
-                        .replace(
-                                Regex("[^0-9.\\-]"),
-                                ""
-                        ) // Remove everything except digits, dots and minus sign
+            raw.trim()
+                .removeSurrounding("\"")
+                .replace(
+                    Regex("[^0-9.\\-]"),
+                    ""
+                ) // Remove everything except digits, dots and minus sign
         return cleaned.toDoubleOrNull()
     }
 
