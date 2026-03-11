@@ -72,6 +72,14 @@ sealed class Screen(
                 "import_preview", "Import Preview",
                 Icons.Filled.FileOpen, Icons.Filled.FileOpen
         )
+        object CategoryBreakdown : Screen(
+                "category_breakdown", "Breakdown",
+                Icons.Filled.FileOpen, Icons.Filled.FileOpen
+        )
+        object CategoryTransactions : Screen(
+                "category_transactions", "Transactions",
+                Icons.Filled.FileOpen, Icons.Filled.FileOpen
+        )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -105,7 +113,10 @@ fun MainScreen() {
         val isOnAddTransaction = currentRoute?.startsWith(Screen.AddTransaction.route) == true
         val isOnSettings = currentRoute == Screen.Settings.route
         val isOnImportPreview = currentRoute == Screen.ImportPreview.route
-        val showChrome = !isAnySelectionMode && !isOnAddTransaction && !isOnSettings && !isOnImportPreview
+        val isOnCategoryBreakdown = currentRoute?.startsWith("category_breakdown") == true
+        val isOnCategoryTransactions = currentRoute?.startsWith("category_transactions") == true
+                || currentRoute?.startsWith("payment_transactions") == true
+        val showChrome = !isAnySelectionMode && !isOnAddTransaction && !isOnSettings && !isOnImportPreview && !isOnCategoryBreakdown && !isOnCategoryTransactions
 
         val tabs = remember { listOf(Screen.Home, Screen.Passbook) }
 
@@ -232,7 +243,13 @@ fun MainScreen() {
                                                                 Screen.AddTransaction.route + "?transactionId=$id"
                                                         ) { launchSingleTop = true }
                                                 },
-                                                onSelectionModeChanged = { isAnySelectionMode = it }
+                                                onSelectionModeChanged = { isAnySelectionMode = it },
+                                                onIncomeClick = { year, month ->
+                                                        navController.navigate("category_breakdown/false/$year/$month")
+                                                },
+                                                onExpenseClick = { year, month ->
+                                                        navController.navigate("category_breakdown/true/$year/$month")
+                                                }
                                         )
                                 }
                         }
@@ -290,6 +307,90 @@ fun MainScreen() {
                                         onBack = {
                                                 viewModel.clearPendingImport()
                                                 navController.popBackStack()
+                                        }
+                                )
+                        }
+                        composable(
+                                route = "category_breakdown/{isExpense}/{year}/{month}",
+                                arguments = listOf(
+                                        androidx.navigation.navArgument("isExpense") { type = NavType.BoolType },
+                                        androidx.navigation.navArgument("year") { type = NavType.IntType },
+                                        androidx.navigation.navArgument("month") { type = NavType.IntType }
+                                )
+                        ) { backStackEntry ->
+                                val isExpense = backStackEntry.arguments?.getBoolean("isExpense") ?: true
+                                val year = backStackEntry.arguments?.getInt("year") ?: Calendar.getInstance().get(Calendar.YEAR)
+                                val month = backStackEntry.arguments?.getInt("month") ?: Calendar.getInstance().get(Calendar.MONTH)
+                                CategoryBreakdownScreen(
+                                        viewModel = viewModel,
+                                        isExpense = isExpense,
+                                        initialYear = year,
+                                        initialMonth = month,
+                                        onBack = { navController.popBackStack() },
+                                        onCategoryClick = { category, y, m ->
+                                                val encoded = java.net.URLEncoder.encode(category, "UTF-8")
+                                                navController.navigate("category_transactions/$encoded/$y/$m")
+                                        },
+                                        onAddTransaction = {
+                                                navController.navigate(Screen.AddTransaction.route) {
+                                                        launchSingleTop = true
+                                                }
+                                        },
+                                        onPaymentMethodClick = { method, y, m ->
+                                                val encoded = java.net.URLEncoder.encode(method, "UTF-8")
+                                                navController.navigate("payment_transactions/$encoded/$y/$m")
+                                        },
+                                )
+                        }
+                        composable(
+                                route = "category_transactions/{category}/{year}/{month}",
+                                arguments = listOf(
+                                        androidx.navigation.navArgument("category") { type = NavType.StringType },
+                                        androidx.navigation.navArgument("year") { type = NavType.IntType },
+                                        androidx.navigation.navArgument("month") { type = NavType.IntType }
+                                )
+                        ) { backStackEntry ->
+                                val category = backStackEntry.arguments?.getString("category")
+                                        ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: ""
+                                val year = backStackEntry.arguments?.getInt("year") ?: Calendar.getInstance().get(Calendar.YEAR)
+                                val month = backStackEntry.arguments?.getInt("month") ?: Calendar.getInstance().get(Calendar.MONTH)
+                                CategoryTransactionsScreen(
+                                        viewModel = viewModel,
+                                        category = category,
+                                        initialYear = year,
+                                        initialMonth = month,
+                                        onBack = { navController.popBackStack() },
+                                        onEditTransaction = { id ->
+                                                navController.navigate(
+                                                        Screen.AddTransaction.route + "?transactionId=$id"
+                                                ) { launchSingleTop = true }
+                                        }
+                                )
+                        }
+
+                        composable(
+                                route = "payment_transactions/{method}/{year}/{month}",
+                                arguments = listOf(
+                                        navArgument("method") { type = NavType.StringType },
+                                        navArgument("year")   { type = NavType.IntType },
+                                        navArgument("month")  { type = NavType.IntType }
+                                )
+                        ) { backStackEntry ->
+                                val method = backStackEntry.arguments?.getString("method")
+                                        ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: ""
+                                val year  = backStackEntry.arguments?.getInt("year")  ?: Calendar.getInstance().get(Calendar.YEAR)
+                                val month = backStackEntry.arguments?.getInt("month") ?: Calendar.getInstance().get(Calendar.MONTH)
+                                CategoryTransactionsScreen(
+                                        viewModel = viewModel,
+                                        category = method,
+                                        initialYear = year,
+                                        initialMonth = month,
+                                        filterByPaymentMethod = true,   // ← key difference
+                                        onBack = { navController.popBackStack() },
+                                        onEditTransaction = { id ->
+                                                navController.navigate(Screen.AddTransaction.route + "?transactionId=$id") {
+                                                        launchSingleTop = true
+                                                }
                                         }
                                 )
                         }

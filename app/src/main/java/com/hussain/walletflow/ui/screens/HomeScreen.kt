@@ -111,7 +111,9 @@ fun HomeScreen(
         listState: androidx.compose.foundation.lazy.LazyListState,
         onSettingsClick: () -> Unit,
         onEditTransaction: (Long) -> Unit,
-        onSelectionModeChanged: (Boolean) -> Unit = {}
+        onSelectionModeChanged: (Boolean) -> Unit = {},
+        onIncomeClick: (year: Int, month: Int) -> Unit = { _, _ -> },
+        onExpenseClick: (year: Int, month: Int) -> Unit = { _, _ -> }
 ) {
         val haptic = LocalHapticFeedback.current
         val context = LocalContext.current
@@ -449,17 +451,23 @@ fun HomeScreen(
                                                                 // Income card
                                                                 Card(
                                                                         modifier = Modifier.weight(1f)
-                                                                                .clip(RoundedCornerShape(20.dp)).then(
-                                                                                if (hideIncome)
-                                                                                        Modifier.clickable {
-                                                                                                incomeRevealed = true
-                                                                                                scope2.launch {
-                                                                                                        kotlinx.coroutines.delay(5000)
-                                                                                                        incomeRevealed = false
+                                                                                .clip(RoundedCornerShape(20.dp))
+                                                                                .clickable {
+                                                                                        when {
+                                                                                                hideIncome && !incomeRevealed -> {
+                                                                                                        // First tap: reveal the amount
+                                                                                                        incomeRevealed = true
+                                                                                                        scope2.launch {
+                                                                                                                kotlinx.coroutines.delay(5000)
+                                                                                                                incomeRevealed = false
+                                                                                                        }
+                                                                                                }
+                                                                                                else -> {
+                                                                                                        // Second tap (revealed) or hide is off: navigate
+                                                                                                        onIncomeClick(selectedYear, selectedMonthIndex)
                                                                                                 }
                                                                                         }
-                                                                                else Modifier
-                                                                        ),
+                                                                                },
                                                                         colors = CardDefaults.cardColors(
                                                                                 containerColor = IncomeGreen.copy(alpha = 0.1f)
                                                                         ),
@@ -514,7 +522,9 @@ fun HomeScreen(
 
                                                                 // Expense card
                                                                 Card(
-                                                                        modifier = Modifier.weight(1f),
+                                                                        modifier = Modifier.weight(1f)
+                                                                                .clip(RoundedCornerShape(20.dp))
+                                                                                .clickable { onExpenseClick(selectedYear, selectedMonthIndex) },
                                                                         colors = CardDefaults.cardColors(
                                                                                 containerColor = ExpenseRed.copy(alpha = 0.1f)
                                                                         ),
