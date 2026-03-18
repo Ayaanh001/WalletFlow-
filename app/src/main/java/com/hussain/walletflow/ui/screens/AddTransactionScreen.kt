@@ -65,7 +65,8 @@ import kotlinx.coroutines.launch
 fun AddTransactionScreen(
         viewModel: TransactionViewModel,
         onBack: () -> Unit,
-        transactionId: Long? = null
+        transactionId: Long? = null,
+        initialTransactionType: String = "EXPENSE"
 ) {
         val context = LocalContext.current
         val prefsRepository = remember { UserPreferencesRepository(context) }
@@ -80,7 +81,14 @@ fun AddTransactionScreen(
                 }
         var currentTransactionId by remember { mutableStateOf(transactionId) }
         var showDeleteConfirmDialog by remember { mutableStateOf(false) }
-        var selectedType by remember { mutableStateOf(TransactionType.EXPENSE) }
+        var selectedType by remember {
+                mutableStateOf(
+                        if (transactionId == null)
+                                if (initialTransactionType == "INCOME") TransactionType.INCOME
+                                else TransactionType.EXPENSE
+                        else TransactionType.EXPENSE  // will be overwritten when existing tx loads
+                )
+        }
         var amount by remember { mutableStateOf("") }
         var name by remember { mutableStateOf("") }
         var selectedCategory by remember { mutableStateOf("") }

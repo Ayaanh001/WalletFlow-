@@ -133,7 +133,7 @@ fun MainScreen() {
                                         tonalElevation = 3.dp,
                                         modifier = Modifier.clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                                 ) {
-                                        NavigationBar(containerColor = Color.Transparent, tonalElevation = 0.dp) {
+                                        NavigationBar(containerColor = Color.Transparent, tonalElevation = 0.dp, modifier = Modifier.height(110.dp)) {
                                                 val currentDestination = navBackStackEntry?.destination
                                                 tabs.forEach { screen ->
                                                         val selected = currentDestination?.hierarchy?.any {
@@ -268,21 +268,28 @@ fun MainScreen() {
                                 }
                         }
                         composable(
-                                route = Screen.AddTransaction.route + "?transactionId={transactionId}",
+                                route = Screen.AddTransaction.route + "?transactionId={transactionId}&transactionType={transactionType}",
                                 arguments = listOf(
                                         navArgument("transactionId") {
                                                 type = NavType.LongType
                                                 defaultValue = -1L
+                                        },
+                                        navArgument("transactionType") {
+                                                type = NavType.StringType
+                                                defaultValue = "EXPENSE"
                                         }
                                 )
                         ) { backStackEntry ->
                                 val transactionId = backStackEntry.arguments
                                         ?.getLong("transactionId")
                                         ?.takeIf { it != -1L }
+                                val transactionType = backStackEntry.arguments
+                                        ?.getString("transactionType") ?: "EXPENSE"
                                 AddTransactionScreen(
                                         viewModel = viewModel,
                                         onBack = { navController.popBackStack() },
-                                        transactionId = transactionId
+                                        transactionId = transactionId,
+                                        initialTransactionType = transactionType
                                 )
                         }
                         composable(Screen.Settings.route) {
@@ -332,7 +339,10 @@ fun MainScreen() {
                                                 navController.navigate("category_transactions/$encoded/$y/$m")
                                         },
                                         onAddTransaction = {
-                                                navController.navigate(Screen.AddTransaction.route) {
+                                                val typeParam = if (isExpense) "EXPENSE" else "INCOME"
+                                                navController.navigate(
+                                                        Screen.AddTransaction.route + "?transactionType=$typeParam"
+                                                ) {
                                                         launchSingleTop = true
                                                 }
                                         },
